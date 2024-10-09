@@ -1,11 +1,13 @@
 saname: test
+isadmin: true
 role:
   - my-role
   - test-role
   - default
 clusterrole:
-  - 
-
+  - my-role
+  - test-role
+  - default
 namespace:
   - default
   - database

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	_ "embed"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -15,24 +18,66 @@ import (
 //go:embed kc-template.yaml
 var kctmplt string
 
-func main() {
+type kubeuser struct {
+	saname       string
+	isnew        bool
+	isadmin      bool
+	namespaces   []string
+	roles        []string
+	clusterroles []string
+}
 
-	print(kctmplt)
-	kubeclient := genkubeclient()
+func (kuser *kubeuser) parseConfigYaml(configpath string) {
 
-	// prompt user for key information
+}
 
+func (kuser *kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 	// create sa,rb/crb on cluster
 	// kubectl create serviceaccount my-service-account --namespace my-namespace
 	// kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=my-namespace:my-service-account --namespace=my-namespace
 	// kubectl create clusterrolebinding my-clusterrolebinding --clusterrole=my-clusterrole --serviceaccount=my-namespace:my-service-account
+}
 
+func (kuser *kubeuser) genKubeconfig() {
+	if !kuser.isnew {
+
+	}
 	// generate kubeconfig
 	// kubectl get secret $(kubectl get serviceaccount my-service-account -n my-namespace -o jsonpath='{.secrets[0].name}') -n my-namespace -o jsonpath='{.data.token}' | base64 --decode
 	// kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
 	// kubectl get secret $(kubectl get serviceaccount my-service-account -n my-namespace -o jsonpath='{.secrets[0].name}') -n my-namespace -o jsonpath='{.data.ca\.crt}' | base64 --decode
+}
+func main() {
+	var configpath string
+	var kuser kubeuser
 
-	// fill out kc-tmplt.yaml
+	if len(os.Args) > 2 {
+		log.Fatalf("Usage: either run as standalone or with path to config yaml")
+		os.Exit(1)
+	}
+
+	if len(os.Args) == 2 {
+		if fileExists(os.Args[1]) {
+			// configuration file exist set it here
+			configpath = os.Args[1]
+		}
+	} else {
+		promptUser(&configpath, &kuser)
+	}
+
+	kubeclient := genkubeclient()
+	kuser.createNewUser(kubeclient)
+
+	print(kctmplt)
+}
+
+// painful helper function
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }
 
 func genkubeclient() *kubernetes.Clientset {
@@ -48,4 +93,47 @@ func genkubeclient() *kubernetes.Clientset {
 	}
 
 	return clientset
+}
+
+func promptUser(configPath *string, kuser *kubeuser) {
+	reader := bufio.NewReader(os.Stdin)
+
+	// Prompt the user to create a new user or use an existing one
+	fmt.Print("Would you like to create a new user? (yes/no): ")
+	createNewUser, _ := reader.ReadString('\n')
+	createNewUser = strings.TrimSpace(strings.ToLower(createNewUser))
+
+	if createNewUser == "yes" {
+		// Ask for the path to the config file
+		fmt.Print("Please enter the path to the config file: ")
+		path, _ := reader.ReadString('\n')
+		*configPath = strings.TrimSpace(path)
+		fmt.Printf("Config path set to: %s\n", *configPath)
+	} else {
+		// Prompt for existing user configuration
+		fmt.Print("Would you like to get the config file for an existing user? (yes/no): ")
+		getExistingConfig, _ := reader.ReadString('\n')
+		getExistingConfig = strings.TrimSpace(strings.ToLower(getExistingConfig))
+
+		if getExistingConfig == "yes" {
+			// Ask for the service account name
+			fmt.Print("What is the service account name? ")
+			serviceAccountName, _ := reader.ReadString('\n')
+			serviceAccountName = strings.TrimSpace(serviceAccountName)
+
+			// Ask for the namespace of the service account
+			fmt.Print("What is the namespace of the service account? ")
+			namespace, _ := reader.ReadString('\n')
+			namespace = strings.TrimSpace(namespace)
+
+			// convert namespace to slice
+			ns := []string{namespace}
+
+			// set up a existing user with genKubeconfig
+			kuser.saname = serviceAccountName
+			kuser.isnew = false
+			kuser.namespaces = ns
+			kuser.genKubeconfig()
+		}
+	}
 }
