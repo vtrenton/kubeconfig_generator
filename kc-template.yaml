@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Config
+clusters:
+- name: my-cluster
+  cluster:
+    server: https://<KUBERNETES_API_SERVER_URL>
+    certificate-authority-data: <CA_CERTIFICATE_BASE64_ENCODED>
+
+contexts:
+- name: my-context
+  context:
+    cluster: my-cluster
+    user: my-service-account
+    namespace: my-namespace
+
+current-context: my-context
+
+users:
+- name: my-service-account
+  user:
+    token: <SERVICE_ACCOUNT_TOKEN>

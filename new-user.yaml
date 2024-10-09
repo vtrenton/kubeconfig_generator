@@ -1,0 +1,13 @@
+saname: test
+role:
+  - my-role
+  - test-role
+  - default
+clusterrole:
+  - 
+
+namespace:
+  - default
+  - database
+  - backend
+  - frontend
