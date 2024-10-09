@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v2"
 	v1 "k8s.io/api/core/v1"
@@ -35,7 +37,6 @@ func (kuser *kubeuser) parseConfigYaml(configpath string) {
 	userconfig, err := os.Open(configpath)
 	if err != nil {
 		log.Fatalf("Could not access file for reading: %v", err)
-		os.Exit(1)
 	}
 	defer userconfig.Close()
 
@@ -43,10 +44,10 @@ func (kuser *kubeuser) parseConfigYaml(configpath string) {
 	err = decoder.Decode(kuser)
 	if err != nil {
 		log.Fatalf("Could not parse yaml - please validate syntax: %v", err)
-		os.Exit(1)
 	}
 }
 
+// TODO: REFCATOR
 func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 	ctx := context.Background()
 
@@ -69,20 +70,6 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 			}
 		}
 
-		// Create the service account in the namespace
-		//	sa := &v1.ServiceAccount{
-		//		ObjectMeta: metav1.ObjectMeta{
-		//			Name:      kuser.Username,
-		//			Namespace: ns,
-		//		},
-		//	}
-		//	_, err = kubeclient.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{})
-		//	if err != nil {
-		//		log.Printf("Failed to create service account in namespace %s: %v", ns, err)
-		//	} else {
-		//		log.Printf("Created service account in namespace %s", ns)
-		//	}
-
 		// Loop through each role to create role bindings
 		for _, rb := range kuser.Roles {
 			// Check if the role exists
@@ -103,7 +90,7 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 				}
 			}
 
-			// Create the role binding for the service account
+			// Create the role binding for the user
 			roleBinding := &rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      fmt.Sprintf("%s-rolebinding", rb),
@@ -111,7 +98,7 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 				},
 				Subjects: []rbacv1.Subject{
 					{
-						Kind:      "ServiceAccount",
+						Kind:      "User",
 						Name:      kuser.Username,
 						Namespace: ns,
 					},
@@ -163,14 +150,14 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 				continue
 			}
 
-			// Create the cluster role binding for the service account
+			// Create the cluster role binding for the user
 			clusterRoleBinding := &rbacv1.ClusterRoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: fmt.Sprintf("%s-clusterrolebinding", crb),
 				},
 				Subjects: []rbacv1.Subject{
 					{
-						Kind:      "ServiceAccount",
+						Kind:      "User",
 						Name:      kuser.Username,
 						Namespace: ns,
 					},
@@ -198,27 +185,6 @@ func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Conf
 	clientkey := kuser.Clientkey
 	clientcert := kuser.Clientcert
 
-	//namespace := kuser.Namespaces[0]
-	//serviceAccountName := kuser.Username
-
-	// Request a token for the service account using TokenRequest API
-	//tokenRequest, err := kubeclient.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, serviceAccountName, &authenticationv1.TokenRequest{
-	//	Spec: authenticationv1.TokenRequestSpec{
-	//		ExpirationSeconds: func(i int64) *int64 { return &i }(3600), // Set token expiration time (optional)
-	//	},
-	//}, metav1.CreateOptions{})
-	//if err != nil {
-	//	log.Printf("Failed to create token for service account %s in namespace %s: %v", serviceAccountName, namespace, err)
-	//	return nil, err
-	//}
-
-	// Extract the token from the TokenRequest response
-	//token := tokenRequest.Status.Token
-
-	// TODO: REFCATOR
-	// GENERATE OPENSSL CSR
-	// SIGN WITH caCert below
-
 	// Retrieve the CA certificate from the kube-root-ca.crt ConfigMap in the kube-system namespace
 	configMap, err := kubeclient.CoreV1().ConfigMaps("kube-system").Get(ctx, "kube-root-ca.crt", metav1.GetOptions{})
 	if err != nil {
@@ -233,6 +199,7 @@ func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Conf
 	}
 
 	// Load the existing kubeconfig file to get the cluster server endpoint
+	// A bit of a hack - might be a better way to accomplish this in the future
 	kubeconfigPath := filepath.Join(homedir.HomeDir(), ".kube", "config")
 	admkubeconfig, err := clientcmd.LoadFromFile(kubeconfigPath)
 	if err != nil {
@@ -240,14 +207,14 @@ func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Conf
 		return nil, err
 	}
 
-	// Extract the cluster server endpoint from the kubeconfig
+	// Extract the first cluster server endpoint from the kubeconfig
 	var clusterServer string
 	for _, cluster := range admkubeconfig.Clusters {
 		clusterServer = cluster.Server
-		break // Assuming you want the first cluster in the kubeconfig
+		break
 	}
 
-	// Construct the kubeconfig object using the token and CA certificate
+	// Construct the kubeconfig object using the Client certificate, Client key and CA certificate
 	kubeconfig := &api.Config{
 		Clusters: map[string]*api.Cluster{
 			"kubernetes": {
@@ -275,48 +242,51 @@ func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Conf
 }
 
 func main() {
-	var configpath string
 	var kuser kubeuser
 	kubeclient := genkubeclient()
 
-	if len(os.Args) > 2 {
-		log.Fatalf("Usage: either run as standalone or with path to config yaml")
-		os.Exit(1)
+	if len(os.Args) != 2 {
+		fmt.Println("Usage: pass a path to a config yaml file as an argument to this program to generate a Kubeconfig for a user and the assoiated Rolebindings/ClusterRoleBindings for the user on the cluster itself.")
+		fmt.Println("Please make sure you have a valid admin kubeconfig at $HOME/.kube/config as well")
+		os.Exit(0)
 	}
 
-	if len(os.Args) == 2 {
-		if fileExists(os.Args[1]) {
-			// configuration file exist set it here
-			configpath = os.Args[1]
-			kuser.parseConfigYaml(configpath)
-			kuser.createNewUser(kubeclient)
+	if !fileExists(os.Args[1]) {
+		log.Fatalf("Invalid config file")
+	}
+
+	// configuration file exist set it here
+	configpath := os.Args[1]
+	kuser.parseConfigYaml(configpath)
+
+	// give the user a chance to stop before any changes are made
+	if validateCluster() {
+		kuser.createNewUser(kubeclient)
+		kubeconfig, err := kuser.genKubeconfig(kubeclient)
+		if err != nil {
+			log.Fatalf("Failed to generate kubeconfig: %v", err)
 		}
+
+		// Convert kubeconfig to YAML format
+		kubeconfigYAML, err := clientcmd.Write(*kubeconfig)
+		if err != nil {
+			log.Fatalf("Failed to convert kubeconfig to YAML: %v", err)
+		}
+
+		// Define the file path to write the kubeconfig file
+		kubeconfigPath := filepath.Join(homedir.HomeDir(), ".kube", fmt.Sprintf("%s-kubeconfig.yaml", kuser.Username))
+
+		// Write the YAML data to a file
+		err = os.WriteFile(kubeconfigPath, kubeconfigYAML, 0644)
+		if err != nil {
+			log.Fatalf("Failed to write kubeconfig to file: %v", err)
+		}
+
+		log.Printf("Successfully wrote kubeconfig to %s", kubeconfigPath)
 	} else {
-		promptUser(&configpath, &kuser, kubeclient)
+		fmt.Println("No changes will be made!")
+		os.Exit(0)
 	}
-
-	// Generate the kubeconfig using the genKubeconfig function
-	kubeconfig, err := kuser.genKubeconfig(kubeclient)
-	if err != nil {
-		log.Fatalf("Failed to generate kubeconfig: %v", err)
-	}
-
-	// Convert kubeconfig to YAML format
-	kubeconfigYAML, err := clientcmd.Write(*kubeconfig)
-	if err != nil {
-		log.Fatalf("Failed to convert kubeconfig to YAML: %v", err)
-	}
-
-	// Define the file path to write the kubeconfig file
-	kubeconfigPath := filepath.Join(homedir.HomeDir(), ".kube", fmt.Sprintf("%s-kubeconfig.yaml", kuser.Username))
-
-	// Write the YAML data to a file
-	err = os.WriteFile(kubeconfigPath, kubeconfigYAML, 0644)
-	if err != nil {
-		log.Fatalf("Failed to write kubeconfig to file: %v", err)
-	}
-
-	log.Printf("Successfully wrote kubeconfig to %s", kubeconfigPath)
 }
 
 // painful helper function
@@ -343,50 +313,44 @@ func genkubeclient() *kubernetes.Clientset {
 	return clientset
 }
 
-func promptUser(configPath *string, kuser *kubeuser, kubeclient *kubernetes.Clientset) {
+func validateCluster() bool {
 	reader := bufio.NewReader(os.Stdin)
+	kubeconfigPath := os.Getenv("HOME") + "/.kube/config"
 
-	// Prompt the user to create a new user or use an existing one
-	fmt.Print("Would you like to create a new user? (yes/no): ")
-	createNewUser, _ := reader.ReadString('\n')
-	createNewUser = strings.TrimSpace(strings.ToLower(createNewUser))
+	// Load the kubeconfig file
+	config, err := clientcmd.LoadFromFile(kubeconfigPath)
+	if err != nil {
+		log.Fatalf("Failed to load kubeconfig file: %v", err)
+	}
 
-	if createNewUser == "yes" {
-		// Ask for the path to the config file
-		fmt.Print("Please enter the path to the config file: ")
-		path, _ := reader.ReadString('\n')
-		*configPath = strings.TrimSpace(path)
-		fmt.Printf("Config path set to: %s\n", *configPath)
-		kuser.parseConfigYaml(*configPath)
-		kuser.createNewUser(kubeclient)
+	// Get the current context
+	currentContext := config.CurrentContext
 
-	} else {
-		// Prompt for existing user configuration
-		fmt.Print("Would you like to get the config file for an existing user? (yes/no): ")
-		getExistingConfig, _ := reader.ReadString('\n')
-		getExistingConfig = strings.TrimSpace(strings.ToLower(getExistingConfig))
+	// Get the server associated with the current context
+	clusterDetails, exists := config.Clusters[config.Contexts[currentContext].Cluster]
+	if !exists {
+		log.Fatalf("Cluster %s not found in kubeconfig", config.Contexts[currentContext].Cluster)
+	}
 
-		if getExistingConfig == "yes" {
-			// Ask for the service account name
-			fmt.Print("What is the service account name? ")
-			serviceAccountName, _ := reader.ReadString('\n')
-			serviceAccountName = strings.TrimSpace(serviceAccountName)
+	fmt.Printf("The current context in $HOME/.kube/config is set to %s with a server of %s\n", currentContext, clusterDetails.Server)
+	fmt.Print("Is this OK? (y/N) ")
+	contextVerified, _ := reader.ReadString('\n')
+	contextVerified = strings.TrimSpace(contextVerified)
 
-			// Ask for the namespace of the service account
-			fmt.Print("What is the namespace of the service account? ")
-			namespace, _ := reader.ReadString('\n')
-			namespace = strings.TrimSpace(namespace)
+	if contextVerified == "yes" || contextVerified == "y" {
+		// We still need to validate if server is alive before continuing
+		serverAddress := strings.TrimPrefix(clusterDetails.Server, "https://")
+		serverAddress = strings.TrimSuffix(serverAddress, "/")
 
-			// convert namespace to slice
-			ns := []string{namespace}
-
-			// set up a existing user with genKubeconfig
-			kuser.Username = serviceAccountName
-			kuser.Existing = true
-			kuser.Namespaces = ns
-		} else {
-			fmt.Println("Bye!")
-			os.Exit(0)
+		conn, err := net.DialTimeout("tcp", serverAddress, 5*time.Second)
+		if err != nil {
+			log.Fatalf("Kubernetes appears to be offline! Failed to connect to %s: %v", serverAddress, err)
 		}
+		_ = conn.Close()
+
+		// if TCP connect test to kubernetes API is good - continue
+		return true
+	} else {
+		return false
 	}
 }
