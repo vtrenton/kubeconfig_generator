@@ -18,7 +18,7 @@ var kctmplt string
 func main() {
 
 	print(kctmplt)
-	//kubeclient := genkubeclient()
+	kubeclient := genkubeclient()
 
 	// prompt user for key information
 
