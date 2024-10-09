@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v2"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,14 +22,12 @@ import (
 )
 
 type kubeuser struct {
-	Username     string   `yaml:"username"`
+	Saname       string   `yaml:"saname"`
 	Existing     bool     `yaml:"existing"`
 	Isadmin      bool     `yaml:"isadmin"`
 	Namespaces   []string `yaml:"namespaces"`
 	Roles        []string `yaml:"roles"`
 	Clusterroles []string `yaml:"clusterroles"`
-	Clientcert   []byte   `yaml:"clientcert"`
-	Clientkey    []byte   `yaml:"clientkey"`
 }
 
 func (kuser *kubeuser) parseConfigYaml(configpath string) {
@@ -70,18 +69,18 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 		}
 
 		// Create the service account in the namespace
-		//	sa := &v1.ServiceAccount{
-		//		ObjectMeta: metav1.ObjectMeta{
-		//			Name:      kuser.Username,
-		//			Namespace: ns,
-		//		},
-		//	}
-		//	_, err = kubeclient.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{})
-		//	if err != nil {
-		//		log.Printf("Failed to create service account in namespace %s: %v", ns, err)
-		//	} else {
-		//		log.Printf("Created service account in namespace %s", ns)
-		//	}
+		sa := &v1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      kuser.Saname,
+				Namespace: ns,
+			},
+		}
+		_, err = kubeclient.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{})
+		if err != nil {
+			log.Printf("Failed to create service account in namespace %s: %v", ns, err)
+		} else {
+			log.Printf("Created service account in namespace %s", ns)
+		}
 
 		// Loop through each role to create role bindings
 		for _, rb := range kuser.Roles {
@@ -112,7 +111,7 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 				Subjects: []rbacv1.Subject{
 					{
 						Kind:      "ServiceAccount",
-						Name:      kuser.Username,
+						Name:      kuser.Saname,
 						Namespace: ns,
 					},
 				},
@@ -171,7 +170,7 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 				Subjects: []rbacv1.Subject{
 					{
 						Kind:      "ServiceAccount",
-						Name:      kuser.Username,
+						Name:      kuser.Saname,
 						Namespace: ns,
 					},
 				},
@@ -194,30 +193,22 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 // genKubeconfig generates a kubeconfig using the service account's token and cluster information
 func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Config, error) {
 	ctx := context.Background()
-	kcname := kuser.Username
-	clientkey := kuser.Clientkey
-	clientcert := kuser.Clientcert
-
-	//namespace := kuser.Namespaces[0]
-	//serviceAccountName := kuser.Username
+	namespace := kuser.Namespaces[0]
+	serviceAccountName := kuser.Saname
 
 	// Request a token for the service account using TokenRequest API
-	//tokenRequest, err := kubeclient.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, serviceAccountName, &authenticationv1.TokenRequest{
-	//	Spec: authenticationv1.TokenRequestSpec{
-	//		ExpirationSeconds: func(i int64) *int64 { return &i }(3600), // Set token expiration time (optional)
-	//	},
-	//}, metav1.CreateOptions{})
-	//if err != nil {
-	//	log.Printf("Failed to create token for service account %s in namespace %s: %v", serviceAccountName, namespace, err)
-	//	return nil, err
-	//}
+	tokenRequest, err := kubeclient.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, serviceAccountName, &authenticationv1.TokenRequest{
+		Spec: authenticationv1.TokenRequestSpec{
+			ExpirationSeconds: func(i int64) *int64 { return &i }(3600), // Set token expiration time (optional)
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create token for service account %s in namespace %s: %v", serviceAccountName, namespace, err)
+		return nil, err
+	}
 
 	// Extract the token from the TokenRequest response
-	//token := tokenRequest.Status.Token
-
-	// TODO: REFCATOR
-	// GENERATE OPENSSL CSR
-	// SIGN WITH caCert below
+	token := tokenRequest.Status.Token
 
 	// Retrieve the CA certificate from the kube-root-ca.crt ConfigMap in the kube-system namespace
 	configMap, err := kubeclient.CoreV1().ConfigMaps("kube-system").Get(ctx, "kube-root-ca.crt", metav1.GetOptions{})
@@ -256,21 +247,20 @@ func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Conf
 			},
 		},
 		AuthInfos: map[string]*api.AuthInfo{
-			kcname: {
-				ClientKeyData:         clientkey,
-				ClientCertificateData: clientcert,
+			serviceAccountName: {
+				Token: token,
 			},
 		},
 		Contexts: map[string]*api.Context{
 			"kubernetes": {
 				Cluster:  "kubernetes",
-				AuthInfo: kcname,
+				AuthInfo: serviceAccountName,
 			},
 		},
 		CurrentContext: "kubernetes",
 	}
 
-	log.Printf("Successfully generated kubeconfig for %s\n", kcname)
+	log.Printf("Successfully generated kubeconfig for service account %s in namespace %s", serviceAccountName, namespace)
 	return kubeconfig, nil
 }
 
@@ -308,7 +298,7 @@ func main() {
 	}
 
 	// Define the file path to write the kubeconfig file
-	kubeconfigPath := filepath.Join(homedir.HomeDir(), ".kube", fmt.Sprintf("%s-kubeconfig.yaml", kuser.Username))
+	kubeconfigPath := filepath.Join(homedir.HomeDir(), ".kube", fmt.Sprintf("%s-kubeconfig.yaml", kuser.Saname))
 
 	// Write the YAML data to a file
 	err = os.WriteFile(kubeconfigPath, kubeconfigYAML, 0644)
@@ -381,7 +371,7 @@ func promptUser(configPath *string, kuser *kubeuser, kubeclient *kubernetes.Clie
 			ns := []string{namespace}
 
 			// set up a existing user with genKubeconfig
-			kuser.Username = serviceAccountName
+			kuser.Saname = serviceAccountName
 			kuser.Existing = true
 			kuser.Namespaces = ns
 		} else {
