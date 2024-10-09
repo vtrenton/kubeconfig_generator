@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -11,8 +10,10 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v2"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -146,6 +147,20 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 					log.Printf("Created cluster role %s", crb)
 				}
 			}
+			// Check if the cluster role binding already exists
+			clusterRoleBindingName := fmt.Sprintf("%s-clusterrolebinding", crb)
+			_, err = kubeclient.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+			if err == nil {
+				// ClusterRoleBinding already exists
+				log.Printf("ClusterRoleBinding %s already exists, skipping creation.", clusterRoleBindingName)
+				continue
+			}
+
+			// If an error occurred, check if it's a NotFound error
+			if !apierrors.IsNotFound(err) {
+				log.Printf("Error checking existence of ClusterRoleBinding %s: %v", clusterRoleBindingName, err)
+				continue
+			}
 
 			// Create the cluster role binding for the service account
 			clusterRoleBinding := &rbacv1.ClusterRoleBinding{
@@ -181,58 +196,59 @@ func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Conf
 	namespace := kuser.Namespaces[0]
 	serviceAccountName := kuser.Saname
 
-	// Retrieve the service account
-	sa, err := kubeclient.CoreV1().ServiceAccounts(namespace).Get(ctx, serviceAccountName, metav1.GetOptions{})
+	// Request a token for the service account using TokenRequest API
+	tokenRequest, err := kubeclient.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, serviceAccountName, &authenticationv1.TokenRequest{
+		Spec: authenticationv1.TokenRequestSpec{
+			ExpirationSeconds: func(i int64) *int64 { return &i }(3600), // Set token expiration time (optional)
+		},
+	}, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Failed to get service account %s in namespace %s: %v", serviceAccountName, namespace, err)
+		log.Printf("Failed to create token for service account %s in namespace %s: %v", serviceAccountName, namespace, err)
 		return nil, err
 	}
 
-	// Get the secret name associated with the service account
-	if len(sa.Secrets) == 0 {
-		return nil, fmt.Errorf("no secrets found for service account %s in namespace %s", serviceAccountName, namespace)
-	}
-	secretName := sa.Secrets[0].Name
+	// Extract the token from the TokenRequest response
+	token := tokenRequest.Status.Token
 
-	// Retrieve the secret containing the service account token and CA certificate
-	secret, err := kubeclient.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+	// Retrieve the CA certificate from the kube-root-ca.crt ConfigMap in the kube-system namespace
+	configMap, err := kubeclient.CoreV1().ConfigMaps("kube-system").Get(ctx, "kube-root-ca.crt", metav1.GetOptions{})
 	if err != nil {
-		log.Printf("Failed to get secret %s for service account %s in namespace %s: %v", secretName, serviceAccountName, namespace, err)
+		log.Printf("Failed to retrieve ConfigMap containing CA certificate: %v", err)
 		return nil, err
 	}
 
-	// Extract the token from the secret
-	token, ok := secret.Data["token"]
+	caCert, ok := configMap.Data["ca.crt"]
 	if !ok {
-		return nil, fmt.Errorf("token not found in secret %s for service account %s in namespace %s", secretName, serviceAccountName, namespace)
+		log.Printf("CA certificate not found in ConfigMap kube-root-ca.crt")
+		return nil, fmt.Errorf("CA certificate not found in ConfigMap kube-root-ca.crt")
 	}
 
-	// Extract the CA certificate from the secret
-	caCert, ok := secret.Data["ca.crt"]
-	if !ok {
-		return nil, fmt.Errorf("ca.crt not found in secret %s for service account %s in namespace %s", secretName, serviceAccountName, namespace)
-	}
-
-	// Get the cluster server endpoint
-	clusterInfo, err := kubeclient.CoreV1().ConfigMaps("kube-system").Get(ctx, "kubeadm-config", metav1.GetOptions{})
+	// Load the existing kubeconfig file to get the cluster server endpoint
+	kubeconfigPath := filepath.Join(homedir.HomeDir(), ".kube", "config")
+	admkubeconfig, err := clientcmd.LoadFromFile(kubeconfigPath)
 	if err != nil {
-		log.Printf("Failed to get cluster server endpoint: %v", err)
+		log.Printf("Failed to load existing kubeconfig: %v", err)
 		return nil, err
 	}
 
-	clusterServer := clusterInfo.Data["apiServer"]
+	// Extract the cluster server endpoint from the kubeconfig
+	var clusterServer string
+	for _, cluster := range admkubeconfig.Clusters {
+		clusterServer = cluster.Server
+		break // Assuming you want the first cluster in the kubeconfig
+	}
 
-	// Construct the kubeconfig object
+	// Construct the kubeconfig object using the token and CA certificate
 	kubeconfig := &api.Config{
 		Clusters: map[string]*api.Cluster{
 			"kubernetes": {
 				Server:                   clusterServer,
-				CertificateAuthorityData: caCert,
+				CertificateAuthorityData: []byte(caCert),
 			},
 		},
 		AuthInfos: map[string]*api.AuthInfo{
 			serviceAccountName: {
-				Token: base64.StdEncoding.EncodeToString(token),
+				Token: token,
 			},
 		},
 		Contexts: map[string]*api.Context{

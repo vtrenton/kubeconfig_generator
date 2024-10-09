@@ -3,14 +3,6 @@ existing: false
 isadmin: true
 namespaces:
   - default
-  - database
-  - backend
-  - frontent
-roles:
-  - my-role
-  - test-role
-  - default
+  - kube-system
 clusterroles:
-  - my-role
-  - test-role
-  - default
+  - view
