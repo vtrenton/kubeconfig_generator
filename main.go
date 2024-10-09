@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"gopkg.in/yaml.v2"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -19,16 +20,28 @@ import (
 var kctmplt string
 
 type kubeuser struct {
-	saname       string
-	isnew        bool
-	isadmin      bool
-	namespaces   []string
-	roles        []string
-	clusterroles []string
+	Saname       string   `yaml:"saname"`
+	Existing     bool     `yaml:"existing"`
+	Isadmin      bool     `yaml:"isadmin"`
+	Namespaces   []string `yaml:"namespaces"`
+	Roles        []string `yaml:"roles"`
+	Clusterroles []string `yaml:"clusterroles"`
 }
 
 func (kuser *kubeuser) parseConfigYaml(configpath string) {
+	userconfig, err := os.Open(configpath)
+	if err != nil {
+		log.Fatalf("Could not access file for reading: %v", err)
+		os.Exit(1)
+	}
+	defer userconfig.Close()
 
+	decoder := yaml.NewDecoder(userconfig)
+	err = decoder.Decode(kuser)
+	if err != nil {
+		log.Fatalf("Could not parse yaml - please validate syntax: %v", err)
+		os.Exit(1)
+	}
 }
 
 func (kuser *kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
@@ -39,7 +52,7 @@ func (kuser *kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 }
 
 func (kuser *kubeuser) genKubeconfig() {
-	if !kuser.isnew {
+	if !kuser.Existing {
 
 	}
 	// generate kubeconfig
@@ -50,6 +63,7 @@ func (kuser *kubeuser) genKubeconfig() {
 func main() {
 	var configpath string
 	var kuser kubeuser
+	kubeclient := genkubeclient()
 
 	if len(os.Args) > 2 {
 		log.Fatalf("Usage: either run as standalone or with path to config yaml")
@@ -60,13 +74,14 @@ func main() {
 		if fileExists(os.Args[1]) {
 			// configuration file exist set it here
 			configpath = os.Args[1]
+			kuser.parseConfigYaml(configpath)
+			kuser.createNewUser(kubeclient)
 		}
 	} else {
-		promptUser(&configpath, &kuser)
+		promptUser(&configpath, &kuser, kubeclient)
 	}
 
-	kubeclient := genkubeclient()
-	kuser.createNewUser(kubeclient)
+	kuser.genKubeconfig()
 
 	print(kctmplt)
 }
@@ -95,7 +110,7 @@ func genkubeclient() *kubernetes.Clientset {
 	return clientset
 }
 
-func promptUser(configPath *string, kuser *kubeuser) {
+func promptUser(configPath *string, kuser *kubeuser, kubeclient *kubernetes.Clientset) {
 	reader := bufio.NewReader(os.Stdin)
 
 	// Prompt the user to create a new user or use an existing one
@@ -109,6 +124,9 @@ func promptUser(configPath *string, kuser *kubeuser) {
 		path, _ := reader.ReadString('\n')
 		*configPath = strings.TrimSpace(path)
 		fmt.Printf("Config path set to: %s\n", *configPath)
+		kuser.parseConfigYaml(*configPath)
+		kuser.createNewUser(kubeclient)
+
 	} else {
 		// Prompt for existing user configuration
 		fmt.Print("Would you like to get the config file for an existing user? (yes/no): ")
@@ -130,10 +148,9 @@ func promptUser(configPath *string, kuser *kubeuser) {
 			ns := []string{namespace}
 
 			// set up a existing user with genKubeconfig
-			kuser.saname = serviceAccountName
-			kuser.isnew = false
-			kuser.namespaces = ns
-			kuser.genKubeconfig()
+			kuser.Saname = serviceAccountName
+			kuser.Existing = true
+			kuser.Namespaces = ns
 		}
 	}
 }

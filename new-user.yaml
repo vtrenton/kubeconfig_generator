@@ -1,15 +1,16 @@
 saname: test
+existing: false
 isadmin: true
-role:
-  - my-role
-  - test-role
-  - default
-clusterrole:
-  - my-role
-  - test-role
-  - default
-namespace:
+namespaces:
   - default
   - database
   - backend
-  - frontend
+  - frontent
+roles:
+  - my-role
+  - test-role
+  - default
+clusterroles:
+  - my-role
+  - test-role
+  - default
