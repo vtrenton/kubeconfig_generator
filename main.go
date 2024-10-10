@@ -24,13 +24,11 @@ import (
 
 type kubeuser struct {
 	Username     string   `yaml:"username"`
-	Existing     bool     `yaml:"existing"`
-	Isadmin      bool     `yaml:"isadmin"`
 	Namespaces   []string `yaml:"namespaces"`
 	Roles        []string `yaml:"roles"`
 	Clusterroles []string `yaml:"clusterroles"`
-	Clientcert   []byte   `yaml:"clientcert"`
-	Clientkey    []byte   `yaml:"clientkey"`
+	Clientcert   string   `yaml:"clientcert"`
+	Clientkey    string   `yaml:"clientkey"`
 }
 
 func (kuser *kubeuser) parseConfigYaml(configpath string) {
@@ -157,9 +155,9 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 				},
 				Subjects: []rbacv1.Subject{
 					{
-						Kind:      "User",
-						Name:      kuser.Username,
-						Namespace: ns,
+						Kind: "User",
+						Name: kuser.Username,
+						//Namespace: ns,
 					},
 				},
 				RoleRef: rbacv1.RoleRef{
@@ -182,8 +180,8 @@ func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 func (kuser kubeuser) genKubeconfig(kubeclient *kubernetes.Clientset) (*api.Config, error) {
 	ctx := context.Background()
 	kcname := kuser.Username
-	clientkey := kuser.Clientkey
-	clientcert := kuser.Clientcert
+	clientkey := []byte(kuser.Clientkey)
+	clientcert := []byte(kuser.Clientcert)
 
 	// Retrieve the CA certificate from the kube-root-ca.crt ConfigMap in the kube-system namespace
 	configMap, err := kubeclient.CoreV1().ConfigMaps("kube-system").Get(ctx, "kube-root-ca.crt", metav1.GetOptions{})

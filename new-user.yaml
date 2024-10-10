@@ -1,8 +1,0 @@
-username: test
-existing: false
-isadmin: true
-namespaces:
-  - default
-  - kube-system
-clusterroles:
-  - view
