@@ -285,7 +285,6 @@ func main() {
 		log.Printf("Successfully wrote kubeconfig to %s", kubeconfigPath)
 	} else {
 		fmt.Println("No changes will be made!")
-		os.Exit(0)
 	}
 }
 
