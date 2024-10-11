@@ -14,7 +14,6 @@ import (
 	"gopkg.in/yaml.v2"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -45,133 +44,36 @@ func (kuser *kubeuser) parseConfigYaml(configpath string) {
 	}
 }
 
-// TODO: REFCATOR
+// Create needed Resources and binding on the cluster
 func (kuser kubeuser) createNewUser(kubeclient *kubernetes.Clientset) {
 	ctx := context.Background()
-
-	// Loop through each namespace associated with the user
+	// Namespaces
 	for _, ns := range kuser.Namespaces {
-		// Check if the namespace exists
 		_, err := kubeclient.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
 		if err != nil {
-			// If the namespace doesn't exist, create it
-			namespace := &v1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: ns,
-				},
-			}
-			_, err = kubeclient.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
-			if err != nil {
-				log.Printf("Failed to create namespace %s: %v", ns, err)
-			} else {
-				log.Printf("Created namespace %s", ns)
-			}
+			createNS(ns, ctx, kubeclient)
 		}
-
-		// Loop through each role to create role bindings
+		// Roles
 		for _, rb := range kuser.Roles {
-			// Check if the role exists
 			_, err := kubeclient.RbacV1().Roles(ns).Get(ctx, rb, metav1.GetOptions{})
 			if err != nil {
-				// If the role doesn't exist, create it
-				role := &rbacv1.Role{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      rb,
-						Namespace: ns,
-					},
-				}
-				_, err = kubeclient.RbacV1().Roles(ns).Create(ctx, role, metav1.CreateOptions{})
-				if err != nil {
-					log.Printf("Failed to create role %s in namespace %s: %v", rb, ns, err)
-				} else {
-					log.Printf("Created role %s in namespace %s", rb, ns)
-				}
+				createRole(rb, ns, kuser.Username, ctx, kubeclient)
 			}
-
-			// Create the role binding for the user
-			roleBinding := &rbacv1.RoleBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("%s-rolebinding", rb),
-					Namespace: ns,
-				},
-				Subjects: []rbacv1.Subject{
-					{
-						Kind:      "User",
-						Name:      kuser.Username,
-						Namespace: ns,
-					},
-				},
-				RoleRef: rbacv1.RoleRef{
-					Kind:     "Role",
-					Name:     rb,
-					APIGroup: "rbac.authorization.k8s.io",
-				},
-			}
-			_, err = kubeclient.RbacV1().RoleBindings(ns).Create(ctx, roleBinding, metav1.CreateOptions{})
-			if err != nil {
-				log.Printf("Failed to create role binding for role %s in namespace %s: %v", rb, ns, err)
-			} else {
-				log.Printf("Created role binding for role %s in namespace %s", rb, ns)
-			}
+			// Role Bindings
+			createRB(rb, ns, kuser.Username, ctx, kubeclient)
 		}
-
-		// Loop through each cluster role to create cluster role bindings
-		for _, crb := range kuser.Clusterroles {
-			// Check if the cluster role exists
-			_, err := kubeclient.RbacV1().ClusterRoles().Get(ctx, crb, metav1.GetOptions{})
-			if err != nil {
-				// If the cluster role doesn't exist, create it
-				clusterRole := &rbacv1.ClusterRole{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: crb,
-					},
-				}
-				_, err = kubeclient.RbacV1().ClusterRoles().Create(ctx, clusterRole, metav1.CreateOptions{})
-				if err != nil {
-					log.Printf("Failed to create cluster role %s: %v", crb, err)
-				} else {
-					log.Printf("Created cluster role %s", crb)
-				}
-			}
-			// Check if the cluster role binding already exists
-			clusterRoleBindingName := fmt.Sprintf("%s-clusterrolebinding", crb)
-			_, err = kubeclient.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
-			if err == nil {
-				// ClusterRoleBinding already exists
-				log.Printf("ClusterRoleBinding %s already exists, skipping creation.", clusterRoleBindingName)
-				continue
-			}
-
-			// If an error occurred, check if it's a NotFound error
-			if !apierrors.IsNotFound(err) {
-				log.Printf("Error checking existence of ClusterRoleBinding %s: %v", clusterRoleBindingName, err)
-				continue
-			}
-
-			// Create the cluster role binding for the user
-			clusterRoleBinding := &rbacv1.ClusterRoleBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: fmt.Sprintf("%s-clusterrolebinding", crb),
-				},
-				Subjects: []rbacv1.Subject{
-					{
-						Kind: "User",
-						Name: kuser.Username,
-						//Namespace: ns,
-					},
-				},
-				RoleRef: rbacv1.RoleRef{
-					Kind:     "ClusterRole",
-					Name:     crb,
-					APIGroup: "rbac.authorization.k8s.io",
-				},
-			}
-			_, err = kubeclient.RbacV1().ClusterRoleBindings().Create(ctx, clusterRoleBinding, metav1.CreateOptions{})
-			if err != nil {
-				log.Printf("Failed to create cluster role binding for cluster role %s: %v", crb, err)
-			} else {
-				log.Printf("Created cluster role binding for cluster role %s", crb)
-			}
+	}
+	// Cluster Roles
+	for _, crb := range kuser.Clusterroles {
+		_, err := kubeclient.RbacV1().ClusterRoles().Get(ctx, crb, metav1.GetOptions{})
+		if err != nil {
+			createCR(crb, ctx, kubeclient)
+		}
+		// Cluster Role Bindings
+		clusterRoleBindingName := fmt.Sprintf("%s-clusterrolebinding", crb)
+		_, err = kubeclient.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+		if err != nil {
+			createCRB(crb, kuser.Username, ctx, kubeclient)
 		}
 	}
 }
@@ -349,5 +251,100 @@ func validateCluster() bool {
 		return true
 	} else {
 		return false
+	}
+}
+
+func createNS(ns string, ctx context.Context, kubeclient *kubernetes.Clientset) {
+	namespace := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ns,
+		},
+	}
+	_, err := kubeclient.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create namespace %s: %v", ns, err)
+	} else {
+		log.Printf("Created namespace %s", ns)
+	}
+}
+
+func createRole(rb, ns, username string, ctx context.Context, kubeclient *kubernetes.Clientset) {
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rb,
+			Namespace: ns,
+		},
+	}
+	_, err := kubeclient.RbacV1().Roles(ns).Create(ctx, role, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create role %s in namespace %s: %v", rb, ns, err)
+	} else {
+		log.Printf("Created role %s in namespace %s", rb, ns)
+	}
+}
+
+func createRB(rb, ns, username string, ctx context.Context, kubeclient *kubernetes.Clientset) {
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-rolebinding", rb),
+			Namespace: ns,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "User",
+				Name:      username,
+				Namespace: ns,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			Kind:     "Role",
+			Name:     rb,
+			APIGroup: "rbac.authorization.k8s.io",
+		},
+	}
+	_, err := kubeclient.RbacV1().RoleBindings(ns).Create(ctx, roleBinding, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create role binding for role %s in namespace %s: %v", rb, ns, err)
+	} else {
+		log.Printf("Created role binding for role %s in namespace %s", rb, ns)
+	}
+}
+
+func createCR(crb string, ctx context.Context, kubeclient *kubernetes.Clientset) {
+	clusterRole := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: crb,
+		},
+	}
+	_, err := kubeclient.RbacV1().ClusterRoles().Create(ctx, clusterRole, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create cluster role %s: %v", crb, err)
+	} else {
+		log.Printf("Created cluster role %s", crb)
+	}
+}
+
+func createCRB(crb, username string, ctx context.Context, kubeclient *kubernetes.Clientset) {
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("%s-clusterrolebinding", crb),
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind: "User",
+				Name: username,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			Kind:     "ClusterRole",
+			Name:     crb,
+			APIGroup: "rbac.authorization.k8s.io",
+		},
+	}
+	_, err := kubeclient.RbacV1().ClusterRoleBindings().Create(ctx, clusterRoleBinding, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create cluster role binding for cluster role %s: %v", crb, err)
+	} else {
+		log.Printf("Created cluster role binding for cluster role %s", crb)
 	}
 }
