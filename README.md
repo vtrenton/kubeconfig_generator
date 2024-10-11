@@ -26,3 +26,15 @@ openssl x509 -req -in client.csr -CA client-ca.crt -CAkey client-ca.key -CAcreat
 ```
 
 Then simply put the `client.crt` and `client.key` in the yaml config
+
+# Building
+
+you can build it locally with `go build cmd/kcgen/kecgen.go` or via the provided Dockerfile for a more consistent deployment.
+
+```bash
+# podman is the same command just s/docker/podman/g
+
+docker build -t kcgen .
+docker run --rm -v new-user-template.yaml:/app/new-user-template.yaml kcgen /app/my_template.yaml
+
+```
