@@ -20,10 +20,10 @@ func main() {
 		os.Exit(0)
 	}
 
-	if !fileExists(os.Args[1]) {
-		log.Fatalf("Invalid config file")
+	info, err := os.Stat(os.Args[1])
+	if os.IsNotExist(err) || info.IsDir() {
+		log.Fatalf("Invalid filepath specified")
 	}
-
 	// configuration file exist set it here
 	configpath := os.Args[1]
 	kuser.parseConfigYaml(configpath)

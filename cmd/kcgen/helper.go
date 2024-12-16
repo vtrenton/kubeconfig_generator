@@ -14,16 +14,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// Checks to see if the file exists
-// also determines if it's a directory
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
-}
-
 // Helper function that creates the client object from the specified kubeconfig
 func genkubeclient() *kubernetes.Clientset {
 	kcpath := filepath.Join(os.Getenv("HOME"), ".kube", "config")
