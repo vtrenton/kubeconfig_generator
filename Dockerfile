@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # Build the Go application
-RUN go build -o /kcgen ./cmd/kcgen/kcgen.go
+RUN go build -o /kcgen ./cmd/kcgen
 
 # Use the same image for the final stage to avoid additional layers
 FROM golang:1.23.1-alpine
